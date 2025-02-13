@@ -1,15 +1,21 @@
-from flask import Flask, request, send_file
+from flask import Flask, Response, request, send_file
+from flask_cors import CORS
 from piano_transcription_inference import PianoTranscription, sample_rate, load_audio
+from music21 import converter
 import os
+from threading import Lock
 
 app = Flask(__name__)
+CORS(app)
 
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = 'temp'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 transcriptor = PianoTranscription(device='cpu')    # 'cuda' | 'cpu'
 
+# Lock to prevent file overwriting
+lock = Lock()
 
 @app.route('/', methods=['GET'])
 def index():
@@ -44,16 +50,53 @@ def transcribe():
 
         transcribed_dict = transcriptor.transcribe(audio, output_path)
 
-        return send_file(
-            output_path,
-            mimetype='audio/midi',
-            as_attachment=True,
-            download_name='transcribed.mid'
-        )
+        if not os.path.exists(output_path):
+            return "Error: MIDI file not created", 500
+        
+        with open(output_path, "rb") as f:
+            midi_data = f.read()
+
+        os.remove(input_path)
+        os.remove(output_path)
+        return Response(midi_data, mimetype="audio/midi")
 
     except Exception as e:
         return f'Error during transcription: {str(e)}', 500
 
+@app.route('/midi2mucicxml', methods=['POST'])
+def midi2musicxml():
+    midi_path = 'temp/midi_file.mid'
+    musicxml_path = 'temp/musicxml.musicxml'
+
+    if 'midi' not in request.files:
+        return 'No file uploaded', 400
+    
+    midi_file = request.files['midi']
+    try:
+        midi_file.save(midi_path)
+
+        sheet = converter.parse(midi_path, format='midi')
+
+        sheet.write('musicxml', musicxml_path)
+
+        with open(musicxml_path, 'r', encoding='utf-8') as f:
+            musicxml_content = f.read()
+
+        if not os.path.exists(musicxml_path):
+            print("Error: MusicXML file not created")
+        if os.path.exists(midi_path):
+            os.remove(midi_path)
+        if os.path.exists(musicxml_path):
+            os.remove(musicxml_path)
+        else: 
+            print("Error: MusicXML file not created")
+
+        return Response(musicxml_content, mimetype="application/xml")
+    
+        
+
+    except Exception as e:
+        return f'Error during conversion: {e}', 500
 
 if __name__ == '__main__':
     app.run(debug=True)
